@@ -6,6 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 
 include("functions.cmake")
 
+add_subdirectory("framework")
+add_subdirectory("thirdparty")
+
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 if(MSVC)
@@ -21,5 +24,4 @@ else(MSVC)
 	set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 endif(MSVC)
 
-add_subdirectory("framework")
-add_subdirectory("test")
+add_subdirectory("game")
