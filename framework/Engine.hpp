@@ -9,40 +9,81 @@
 #include "TypeMask.hpp"
 
 #define MAX_SYSTEMS 8
-#define MAX_COMPONENTS 16
+#define MAX_COMPONENTS 8
+
+#define CHUNK_SIZE 1024 * 1024 * 128 // 1024 kb per ObjectPool chunk
+
+#define ENGINE_MEMBER_NAME _engine
+#define ID_MEMBER_NAME _id
 
 #define SUBSCRIBERS (MAX_SYSTEMS > MAX_COMPONENTS ? MAX_SYSTEMS :  MAX_COMPONENTS)
 
-#define INTERFACE_FUNC(e, f) e::InterfaceFunction<decltype(&f), &f>
+// Helper macros, slightly cleaner syntax
 
-#define CHUNK_SIZE 1024 * 1024 * 128
+#define INTERFACE_FUNC(EngineType, interfaceFunc) EngineType::InterfaceFunction<decltype(&interfaceFunc), &interfaceFunc>
 
+#define INTERFACE_ENABLE(engine, interfaceFunc) engine.subscribe<std::remove_reference<decltype(*this)>::type, INTERFACE_FUNC(std::remove_reference<decltype(engine)>::type, interfaceFunc)>
+
+#define CALL_SYSTEMS(engine, interfaceFunc) engine.callSystems<INTERFACE_FUNC(std::remove_reference<decltype(engine)>::type, interfaceFunc)>
+
+#define CALL_COMPONENTS(engine, interfaceFunc) engine.callComponents<INTERFACE_FUNC(std::remove_reference<decltype(engine)>::type, interfaceFunc)>
+
+/*
+Usage:
+	class SystemInterface;
+	class ComponentInterface;
+
+	using Engine = InterfaceEngine<SystemInterface, ComponentInterface>;
+
+	class SystemInterface : public Engine::BaseSystem {
+		// System scope definitions
+	}
+
+	class ComponentInterface : public Engine::BaseComponent {
+		// Component scope definitions
+	}
+*/
 template <typename SystemInterface, typename ComponentInterface>
-class SimpleEngine {
-	using TypeMask = TypeMask<MAX_COMPONENTS>;
-
-	struct Identity {
-		enum Flags {
-			None = 0,
-			Active = 1,
-			Destroyed = 2,
-			Buffered = 4
-		};
-
-		uint32_t version = 0;
-		TypeMask mask;
-		uint32_t references = 0;
-		uint8_t flags = None;
-	};
-
+class InterfaceEngine {
 public:
+	using TypeMask = TypeMask<MAX_COMPONENTS, ComponentInterface>;
+
+	// Destructors for Systems are called virtually
 	class BaseSystem {
+	protected:
+		//InterfaceEngine& ENGINE_MEMBER_NAME;
+
 	public:
+		//BaseSystem(InterfaceEngine& engine) : _engine(engine) { }
 		virtual ~BaseSystem() { }
 	};
 
-	class BaseComponent { };
+	// Destructors for Components are called virtually by their TypePools (no need for virtual destructor here)
+	class BaseComponent { 
+	protected:
+		InterfaceEngine& ENGINE_MEMBER_NAME;
+		const uint64_t ID_MEMBER_NAME;
 
+	public:
+		BaseComponent(InterfaceEngine& engine, uint64_t id) : _engine(engine), _id(id) { }
+	};
+
+	/*
+	SystemInterface / ComponenentInterface member functions have static state to store call order of child types, 
+
+	Static state for defining call order for System / Component interface functions.
+	i.e. Window might want to update before everything else (for input events), and lateUpdate after everything else (to flip buffer).
+
+	Usage:
+		InterfaceFunction<decltype(&SystemInterface::myFunc), &SystemInterface::myFunc>;
+	and:
+		engine.subscribe<Renderer, INTERFACE_FUNC(Engine, SystemInterface::update)>(1);
+		engine.call<INTERFACE_FUNC(Engine, SystemInterface::update)>(0.5);
+
+	(when vs17 supports template <auto> it'd just be):
+		engine.subscribe<Renderer, &SystemInterface::update>(1);
+		engine.call<&SystemInterface::update>(0.5);
+	*/
 	template <typename T, T>
 	class InterfaceFunction;
 
@@ -101,15 +142,27 @@ public:
 				std::sort(_subscribers, _subscribers + _subscriberCount);
 		}
 
-		friend class SimpleEngine;
+		friend class InterfaceEngine;
 	};
 
+	/*
+	Referenced wrapper for entity ID, used when calling iterate. (somewhat obsolete, REMOVE THIS!)
+	Calls engine.reference(id) during Constructor(), and calls engine.dereference(id) during ~Destructor().
+
+	Usage:
+		engine.iterate([&](Entity& entity){
+			if (!entity.has<Transform, Model>())
+				return;
+
+			// do stuff
+		});
+	*/
 	class Entity {
-		SimpleEngine& _engine;
+		InterfaceEngine& _engine;
 		uint64_t _id = 0;
 
 	public:
-		inline Entity(SimpleEngine& engine) : _engine(engine) { }
+		inline Entity(InterfaceEngine& engine) : _engine(engine) { }
 
 		inline uint64_t id() const {
 			return _id;
@@ -129,9 +182,7 @@ public:
 			if (!_id)
 				return;
 
-			_engine.dereferenceEntity(_id);
 			_engine.destroyEntity(_id);
-			_id = 0;
 		}
 
 		inline bool valid() const {
@@ -225,6 +276,20 @@ public:
 	};
 
 private:
+	struct Identity {
+		enum Flags {
+			None = 0,
+			Active = 1,
+			Destroyed = 2,
+			Buffered = 4
+		};
+
+		uint32_t version = 0;
+		TypeMask mask;
+		uint32_t references = 0;
+		uint8_t flags = None;
+	};
+
 	SystemInterface* _systems[MAX_SYSTEMS] = { nullptr };
 	BasePool* _componentPools[MAX_COMPONENTS] = { nullptr };
 
@@ -263,6 +328,9 @@ private:
 
 	inline bool _validId(uint64_t id, uint32_t* index, uint32_t* version) const {
 		assert(index && version); // sanity
+
+		if (!id)
+			return false;
 
 		*index = front64(id);
 		*version = back64(id);
@@ -322,37 +390,29 @@ private:
 		lambda(entity);
 	}
 
-	template <uint32_t I, typename Tuple>
-	inline typename std::enable_if<I == std::tuple_size<Tuple>::value, bool>::type _hasComponentsRecursive(uint32_t index) const {
-		return true;
-	}
-
-	template <uint32_t I, typename Tuple>
-	inline typename std::enable_if<I < std::tuple_size<Tuple>::value, bool>::type _hasComponentsRecursive(uint32_t index) const {
-		using T = std::tuple_element<I, Tuple>::type;
-
-		static_assert(std::is_base_of<ComponentInterface, T>::value);
-
-		const uint32_t componentIndex = _interfaceIndex<T>();
-
-		if (!_componentPools[componentIndex])
-			return false;
-
-		if (!_indexIdentities[index].mask.has<T>())
-			return false;
-
-		return _hasComponentsRecursive<I + 1, Tuple>(index);
-	}
-
 	template <typename ...Ts>
 	inline bool _hasComponents(uint32_t index) const {
 		assert(_validIndex(index)); // sanity
 
-		return _hasComponentsRecursive<0, std::tuple<Ts...>>(index);
+		return _indexIdentities[index].mask.has<Ts...>();
+	}
+
+	template <uint32_t I, typename Tuple>
+	inline typename std::enable_if<I == std::tuple_size<Tuple>::value>::type _registerComponentRecursive() { }
+
+	template <uint32_t I, typename Tuple>
+	inline typename std::enable_if<I < std::tuple_size<Tuple>::value>::type _registerComponentRecursive() {
+		using T = std::tuple_element<I, Tuple>::type;
+
+		static_assert(std::is_base_of<ComponentInterface, T>::value);
+
+		_createPool<T>();
+
+		_registerComponentRecursive<I + 1, Tuple>();
 	}
 
 public:
-	inline ~SimpleEngine() {
+	inline ~InterfaceEngine() {
 		// delete components
 		for (uint32_t y = 0; y < _indexIdentities.size(); y++) {
 			const Identity& entity = _indexIdentities[y];
@@ -380,7 +440,7 @@ public:
 	}
 
 	template <typename T, typename ...Ts>
-	inline void addSystem(Ts&&... args) {
+	inline void registerSystem(Ts&&... args) {
 		static_assert(std::is_base_of<SystemInterface, T>::value);
 
 		const uint32_t index = _interfaceIndex<T>();
@@ -395,6 +455,11 @@ public:
 		_systems[index] = new T(std::forward<Ts>(args)...);
 	}
 
+	template <typename ...Ts>
+	inline void registerComponents() {
+		_registerComponentRecursive<0, std::tuple<Ts...>>();
+	}
+
 	inline uint64_t createEntity() {
 		uint32_t index;
 
@@ -406,6 +471,11 @@ public:
 			assert(_indexIdentities.size() + 1 <= UINT32_MAX);
 			index = (uint32_t)_indexIdentities.size();
 			_indexIdentities.resize(index + 1);
+		}
+
+		if (_iterating) {
+			_indexIdentities[index].flags |= Identity::Buffered;
+			_bufferedIndexes.push_back(index);
 		}
 
 		_indexIdentities[index].flags |= Identity::Active;
@@ -427,7 +497,7 @@ public:
 			_indexIdentities[index].mask.add<T>();
 
 			if constexpr (std::is_constructible<T, Engine&, uint64_t, Ts...>::value)
-				pool->insert<T>(*this, id, index, std::forward<Ts>(args)...);
+				pool->insert<T>(index, *this, id, std::forward<Ts>(args)...);
 			else
 				pool->insert<T>(index, std::forward<Ts>(args)...);
 		}
@@ -468,12 +538,21 @@ public:
 		if (!_validId(id, &index, &version))
 			return;
 
-		for (uint32_t i = 0; i < InterfaceFunction::_subscriberCount; i++)
-			((ComponentInterface*)(_componentPools[InterfaceFunction::_subscribers[i].index]->getPtr(index))->*InterfaceFunction::_funcPtr)(std::forward<Ts>(args)...);
+		const TypeMask& mask = _indexIdentities[index].mask;
+
+		for (uint32_t i = 0; i < InterfaceFunction::_subscriberCount; i++) {
+			uint32_t componentIndex = InterfaceFunction::_subscribers[i].index;
+
+			if (!mask.has(componentIndex))
+				continue;
+
+			ComponentInterface* componentInterface = (ComponentInterface*)_componentPools[componentIndex]->getPtr(index);
+			(componentInterface->*InterfaceFunction::_funcPtr)(std::forward<Ts>(args)...);
+		}
 	}
 	
 	template <typename T>
-	inline bool hasSystem() {
+	inline bool hasSystem() const {
 		static_assert(std::is_base_of<SystemInterface, T>::value);
 
 		return _systems[_interfaceIndex<T>()];
@@ -524,7 +603,7 @@ public:
 		if (!_validId(id, &index, &version) || !_hasComponents<T>(index))
 			return nullptr;
 
-		return (T*)_componentPools[componentIndex]->getPtr(index);
+		return (T*)_componentPools[_interfaceIndex<T>()]->getPtr(index);
 	}
 
 	template <typename T>
@@ -576,8 +655,8 @@ public:
 		return (_indexIdentities.size() + _bufferedIndexes.size()) - _freeIndexes.size();
 	}
 
-	template <typename T>
-	inline void iterateEntities(const T& lambda) {
+	template <typename Lambda>
+	inline void iterateEntities(const Lambda& lambda) {
 		_iterating = true;
 
 		for (uint32_t i = 0; i < _indexIdentities.size(); i++)
@@ -593,12 +672,49 @@ public:
 
 		_iterating = false;
 	}
+
+	bool getEntityState(uint64_t id, uint32_t* index, TypeMask* mask) const {
+		assert(index && mask);
+
+		uint32_t version;
+
+		if (!_validId(id, index, &version))
+			return false;
+
+		*mask = _indexIdentities[*index].mask;
+
+		return true;
+	}
+
+	uint64_t setEntityState(uint32_t index, const TypeMask& mask) {
+		assert(!_validIndex(index)); // can't be valid index
+
+		if (_indexIdentities.size() >= index)
+			_indexIdentities.resize(index + 1);
+
+		_indexIdentities[index].version++;
+		_indexIdentities[index].flags |= Identity::Active;
+		_indexIdentities[index].mask = mask;
+
+		uint64_t id = combine32(index, _indexIdentities[index].version);
+
+		for (uint32_t i = 0; i < MAX_COMPONENTS; i++) {
+			if (!mask.has(i))
+				continue;
+
+			assert(_componentPools[i]); // component must already be registered
+
+			_componentPools[i]->insert<ComponentInterface>(index, *this, id);
+		}
+
+		return id;
+	}
 };
 
 template <typename SystemInterface, typename ComponentInterface>
 template <typename T, typename ...Ts, void(T::*func)(Ts...)>
-typename SimpleEngine<SystemInterface, ComponentInterface>::InterfaceFunction<void(T::*)(Ts...), func>::Subscription SimpleEngine<SystemInterface, ComponentInterface>::InterfaceFunction<void(T::*)(Ts...), func>::_subscribers[SUBSCRIBERS] = { 0 };
+typename InterfaceEngine<SystemInterface, ComponentInterface>::InterfaceFunction<void(T::*)(Ts...), func>::Subscription InterfaceEngine<SystemInterface, ComponentInterface>::InterfaceFunction<void(T::*)(Ts...), func>::_subscribers[SUBSCRIBERS] = { 0 };
 
 template <typename SystemInterface, typename ComponentInterface>
 template <typename T, typename ...Ts, void(T::*func)(Ts...)>
-uint32_t SimpleEngine<SystemInterface, ComponentInterface>::InterfaceFunction<void(T::*)(Ts...), func>::_subscriberCount = 0;
+uint32_t InterfaceEngine<SystemInterface, ComponentInterface>::InterfaceFunction<void(T::*)(Ts...), func>::_subscriberCount = 0;

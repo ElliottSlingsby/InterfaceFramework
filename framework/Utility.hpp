@@ -2,11 +2,6 @@
 
 #include <cstdint>
 #include <chrono>
-#include <thread>
-#include <utility>
-#include <iostream>
-#include <string>
-#include <fstream>
 
 using Clock = std::chrono::high_resolution_clock;
 using TimePoint = Clock::time_point;
@@ -46,21 +41,4 @@ template <typename Namespace, typename T>
 inline uint32_t typeIndex() {
 	static uint32_t index = typeIndexCount<Namespace>(true);
 	return index;
-}
-
-inline std::string replace(char from, char to, std::string text) {
-	for (char& c : text) {
-		if (c == from)
-			c = to;
-	}
-
-	return text;
-}
-
-inline std::string upperPath(std::string filePath) {
-	if (filePath.empty())
-		return filePath;
-
-	filePath.pop_back();
-	return filePath.substr(0, filePath.find_last_of('/') + 1);
 }
