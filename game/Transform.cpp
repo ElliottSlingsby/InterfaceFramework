@@ -34,8 +34,10 @@ void Transform::serialize(BaseReflector& reflector) {
 
 	switch (reflector.mode) {
 	case BaseReflector::Out:
-		parentIndex = front64(_parent);
-		reflector.buffer("transform", "parent", &parentIndex);
+		if (_parent) {
+			parentIndex = front64(_parent);
+			reflector.buffer("transform", "parent", &parentIndex);
+		}
 
 		eulerAngles = glm::degrees(glm::eulerAngles(rotation));
 		reflector.buffer("transform", "rotation", &eulerAngles[0], 3);

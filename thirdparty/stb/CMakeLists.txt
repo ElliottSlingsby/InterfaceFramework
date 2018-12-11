@@ -10,10 +10,6 @@ download_file("stb_rect_pack.h" "https://raw.githubusercontent.com/nothings/stb/
 
 target_include_directories("stb" INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
 
-target_compile_definitions("stb" INTERFACE STB_IMAGE_IMPLEMENTATION=1)
-target_compile_definitions("stb" INTERFACE STB_TRUETYPE_IMPLEMENTATION=1)
-target_compile_definitions("stb" INTERFACE STB_RECT_PACK_IMPLEMENTATION=1)
-
 file(GLOB_RECURSE src "*.h")
 
 add_library("stb_dummy" STATIC ${src})

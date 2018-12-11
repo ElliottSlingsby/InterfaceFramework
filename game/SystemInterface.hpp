@@ -5,8 +5,6 @@
 #include <glm\glm.hpp>
 #include <vector>
 
-#include "Serializer.hpp"
-
 class ComponentInterface;
 class SystemInterface;
 
@@ -178,6 +176,7 @@ public:
 
 		virtual bool buffered(const std::string& type, const std::string& property) const { return false; }
 
+		virtual void buffer(const std::string& type, const std::string& property, std::string* value, uint32_t count = 1) { }
 		virtual void buffer(const std::string& type, const std::string& property, char* value, uint32_t count = 1) { }
 		virtual void buffer(const std::string& type, const std::string& property, bool* value, uint32_t count = 1) { }
 		virtual void buffer(const std::string& type, const std::string& property, float* value, uint32_t count = 1) { }

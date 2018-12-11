@@ -1,27 +1,14 @@
 #include "Renderer.hpp"
 
-#include <glad\glad.h>
-
-#include <glm\gtc\matrix_transform.hpp>
-#include <glm\gtx\matrix_decompose.hpp>
-
-#include <assimp\Importer.hpp>
-#include <assimp\scene.h>
-#include <assimp\postprocess.h>
-
-#include <stb_image.h>
-#include <stb_rect_pack.h>
-#include <stb_truetype.h>
-
 #include "Transform.hpp"
 #include "Name.hpp"
 
-#include "TestFunctions.hpp"
-
 #include <iostream>
-#include <sstream>
-#include <fstream>
+#include <filesystem>
 
+#include <glm\gtc\matrix_transform.hpp>
+
+/*
 struct Vertex {
 	glm::vec3 position;
 	glm::vec2 texcoord;
@@ -32,11 +19,6 @@ struct Texel {
 	glm::vec3 tangent;
 	glm::uvec2 texcoord;
 };
-
-inline void errorCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
-	std::string errorMessage(message, message + length);
-	std::cerr << source << ',' << type << ',' << id << ',' << severity << std::endl << errorMessage << std::endl << std::endl;
-}
 
 inline float crossProduct(const glm::vec2& a, const glm::vec2& b) {
 	return glm::cross(glm::vec3(a, 0), glm::vec3(b, 0)).z;
@@ -67,8 +49,8 @@ inline void interpolateTexels(Vertex triangle[3], const glm::vec2& resolution, c
 	glm::vec2 vs1 = vt2 - vt1; // vt1 vertex to vt2
 	glm::vec2 vs2 = vt3 - vt1; // vt1 vertex to vt3
 
-	for (uint32_t x = minX; x < maxX; x++) {
-		for (uint32_t y = minY; y < maxY; y++) {
+	for (int x = minX; x < maxX; x++) {
+		for (int y = minY; y < maxY; y++) {
 			glm::vec2 q{ x - vt1.x, y - vt1.y };
 
 			q += glm::vec2{ 0.5f, 0.5f };
@@ -88,222 +70,14 @@ inline void interpolateTexels(Vertex triangle[3], const glm::vec2& resolution, c
 		}
 	}
 }
+*/
 
-Model* Renderer::_addModel(uint64_t id, uint32_t mesh, uint32_t texture, GLuint program) {
-	Model& model = *_engine.addComponent<Model>(id);
-
-	if (mesh)
-		model.meshContextId = mesh;
-
-	if (program)
-		model.programContextId = program;
-	else if (!model.programContextId && _defaultProgram)
-		model.programContextId = _defaultProgram;
-
-	if (texture)
-		model.textureBufferId = texture;
-	else if (!model.textureBufferId && _defaultTexture)
-		model.textureBufferId = _defaultTexture;
-
-	return &model;
+inline void errorCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+	std::string errorMessage(message, message + length);
+	std::cerr << source << ',' << type << ',' << id << ',' << severity << std::endl << errorMessage << std::endl << std::endl;
 }
 
-bool Renderer::_compileShader(GLuint type, GLuint* shader, const std::string & file){
-	if (*shader == 0)
-		*shader = glCreateShader(type);
-
-	std::ifstream stream;
-
-	stream.open(file, std::ios::in);
-
-	if (!stream.is_open())
-		return false;
-
-	const std::string source = std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
-
-	stream.close();
-
-	const GLchar* sourcePtr = (const GLchar*)(source.c_str());
-
-	glShaderSource(*shader, 1, &sourcePtr, 0);
-	glCompileShader(*shader);
-
-	GLint compiled;
-	glGetShaderiv(*shader, GL_COMPILE_STATUS, &compiled);
-
-	if (compiled == GL_TRUE)
-		return true;
-
-	GLint length = 0;
-	glGetShaderiv(*shader, GL_INFO_LOG_LENGTH, &length);
-
-	std::vector<GLchar> message(length);
-	glGetShaderInfoLog(*shader, length, &length, &message[0]);
-
-	glDeleteShader(*shader);
-	*shader = 0;
-
-	std::cerr << (char*)(&message[0]) << std::endl << std::endl;
-	return false;
-}
-
-void Renderer::_bufferMesh(MeshContext* meshContext, const aiMesh& mesh){
-	assert(meshContext); // sanity
-
-	// gen buffers if new meshContext
-	if (!meshContext->indexCount) {
-		assert(!meshContext->arrayObject && !meshContext->indexBuffer && !meshContext->vertexBuffer); // sanity
-
-		glGenVertexArrays(1, &meshContext->arrayObject);
-		glGenBuffers(1, &meshContext->vertexBuffer);
-		glGenBuffers(1, &meshContext->indexBuffer);
-	}
-
-	// bind buffers
-	glBindVertexArray(meshContext->arrayObject);
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, meshContext->indexBuffer);
-	glBindBuffer(GL_ARRAY_BUFFER, meshContext->vertexBuffer);
-
-	// buffer index data
-	meshContext->indexCount = mesh.mNumFaces * 3;
-
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, meshContext->indexCount * sizeof(uint32_t), nullptr, GL_STATIC_DRAW);
-
-	for (uint32_t i = 0; i < mesh.mNumFaces; i++)
-		glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, i * sizeof(uint32_t) * 3, sizeof(uint32_t) * 3, mesh.mFaces[i].mIndices);
-
-	// buffer vertex data
-	size_t positionsSize = 3 * mesh.mNumVertices * sizeof(float)* (uint32_t)mesh.HasPositions();
-	size_t normalSize = 3 * mesh.mNumVertices * sizeof(float)* (uint32_t)mesh.HasNormals();
-	size_t textureCoordsSize = 2 * mesh.mNumVertices * sizeof(float)* (uint32_t)mesh.HasTextureCoords(0);
-
-	glBufferData(GL_ARRAY_BUFFER, positionsSize + normalSize + textureCoordsSize, 0, GL_STATIC_DRAW);
-
-	// positions
-	if (positionsSize) {
-		glEnableVertexAttribArray(_constructionInfo.positionAttrLoc);
-		glVertexAttribPointer(_constructionInfo.positionAttrLoc, 3, GL_FLOAT, GL_FALSE, 0, (void*)(0));
-		glBufferSubData(GL_ARRAY_BUFFER, 0, positionsSize, mesh.mVertices);
-	}
-
-	// normals
-	if (normalSize) {
-		glEnableVertexAttribArray(_constructionInfo.normalAttrLoc);
-		glVertexAttribPointer(_constructionInfo.normalAttrLoc, 3, GL_FLOAT, GL_FALSE, 0, (void*)(positionsSize));
-		glBufferSubData(GL_ARRAY_BUFFER, positionsSize, normalSize, mesh.mNormals);
-	}
-
-	// texcoords (individually buffering vec3s to vec2s)
-	if (textureCoordsSize) {
-		glEnableVertexAttribArray(_constructionInfo.texcoordAttrLoc);
-		glVertexAttribPointer(_constructionInfo.texcoordAttrLoc, 2, GL_FLOAT, GL_FALSE, 0, (void*)(positionsSize + normalSize));
-
-		for (uint32_t i = 0; i < mesh.mNumVertices; i++)
-			glBufferSubData(GL_ARRAY_BUFFER, positionsSize + normalSize + (i * 2 * sizeof(float)), 2 * sizeof(float), &mesh.mTextureCoords[0][i]);
-	}
-}
-
-void Renderer::_recusriveBufferMesh(const aiScene& scene, const aiNode& node, uint64_t parent, std::vector<uint32_t>* meshContextIds){
-	assert(meshContextIds); // sanity
-
-	// if root then set id to parent, else create new one
-	uint64_t id;
-
-	if (scene.mRootNode == &node) {
-		meshContextIds->resize(scene.mNumMeshes, 0);
-
-		id = parent;
-	}
-	else if (parent) {
-		id = _engine.createEntity();
-
-		Transform& transform = *_engine.addComponent<Transform>(id);
-
-		_engine.addComponent<Transform>(parent)->addChild(id);
-
-		aiVector3D position, scale;
-		aiQuaternion rotation;
-
-		node.mTransformation.Decompose(scale, rotation, position);
-
-		fromAssimp(position, &transform.position);
-		fromAssimp(scale, &transform.scale);
-		fromAssimp(rotation, &transform.rotation);
-	}
-
-	// buffer mesh if existing
-	if (node.mNumMeshes) {
-		uint32_t meshContextId = (*meshContextIds)[node.mMeshes[0]];
-
-		if (!meshContextId) {
-			meshContextId = _meshContexts.size() + 1;
-			_meshContexts.resize(_meshContexts.size() + 1);
-
-			(*meshContextIds)[node.mMeshes[0]] = meshContextId;
-
-			_bufferMesh(&_meshContexts[meshContextId - 1], *scene.mMeshes[node.mMeshes[0]]);
-		}
-
-		if (parent) {
-			_addModel(id, meshContextId);
-			_engine.addComponent<Name>(id, node.mName.C_Str());
-		}
-	}
-
-	// recurse
-	for (uint32_t i = 0; i < node.mNumChildren; i++)
-		_recusriveBufferMesh(scene, *node.mChildren[i], id, meshContextIds);
-}
-
-Renderer::Renderer(Engine& engine, const ConstructorInfo& constructionInfo) : _engine(engine), _constructionInfo(constructionInfo), _camera(engine){
-	INTERFACE_ENABLE(engine, SystemInterface::initiate)(0);
-	INTERFACE_ENABLE(engine, SystemInterface::update)(1);
-
-	INTERFACE_ENABLE(engine, SystemInterface::windowOpen)(0);
-	INTERFACE_ENABLE(engine, SystemInterface::framebufferSize)(0);
-}
-
-void Renderer::initiate(const std::vector<std::string>& args){
-	glDebugMessageCallback(errorCallback, nullptr);
-
-	stbi_set_flip_vertically_on_load(true);
-}
-
-void Renderer::windowOpen(bool opened){
-	_rendering = opened;
-
-	if (!opened)
-		return;
-
-	glEnable(GL_CULL_FACE);
-	glEnable(GL_DEPTH_TEST);
-	glEnable(GL_MULTISAMPLE);
-	glEnable(GL_DITHER);
-}
-
-void Renderer::framebufferSize(glm::uvec2 size){
-	_size.x = size.x;
-	_size.y = size.y;
-}
-
-void Renderer::update(double dt){
-	if (!_rendering)
-		return;
-	
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-	render({ 0, 0 }, _size);
-}
-
-void Renderer::reshape(const ShapeInfo& config){
-	_shapeInfo.verticalFov = config.verticalFov;
-	_shapeInfo.zDepth = config.zDepth;
-}
-
-void Renderer::setCamera(uint64_t id) {
-	_camera.set(id);
-}
-
+/*
 void Renderer::buildLightmaps(){
 	// testing container
 	std::vector<std::pair<glm::vec3, glm::quat>> texels;
@@ -378,246 +152,237 @@ void Renderer::buildLightmaps(){
 
 	// testing, change this!
 	for (auto i : texels) {
-		Test::createAxis(_engine, "C:/Git Projects/InterfaceEngine/bin/data/", i.first, i.second);
+		Test::createAxis(_engine, _path, i.first, i.second);
+	}
+}
+*/
+
+void nodeToEntity(Engine& engine, const std::string& meshFile, const GlLoader::MeshHierarchy::Node& node, uint64_t id, bool reload = false) {
+	if (!engine.hasComponents<Transform>(id)) {
+		Transform* transform = engine.addComponent<Transform>(id);
+
+		transform->position = node.position;
+		transform->rotation = node.rotation;
+		transform->scale = node.scale;
+	}
+
+	if (node.name != "")
+		engine.addComponent<Name>(id, node.name);
+
+	if (node.hasMesh) {
+		Model* model = engine.addComponent<Model>(id);
+		model->loadMesh(meshFile, node.meshContextIndex, reload);
 	}
 }
 
-void Renderer::render(glm::uvec2 position, glm::uvec2 size){
+void Renderer::_render(glm::uvec2 position, glm::uvec2 size) {
 	if (!size.x && !size.y)
 		size = _size;
-
-	if (_shapeInfo.verticalFov && _size.x && _size.y && _shapeInfo.zDepth)
-		_projectionMatrix = glm::perspectiveFov(glm::radians(_shapeInfo.verticalFov), (float)size.x, (float)size.y, 1.f, _shapeInfo.zDepth);
-
+	
+	if (_shape.verticalFov && _size.x && _size.y && _shape.zDepth)
+		_projectionMatrix = glm::perspectiveFov(glm::radians(_shape.verticalFov), (float)size.x, (float)size.y, 1.f, _shape.zDepth);
+	
 	glViewport(position.x, position.y, size.x, size.y);
-
+	
 	_engine.iterateEntities([&](Engine::Entity& entity) {
 		if (!entity.has<Transform, Model>())
 			return;
-
+	
 		const Transform& transform = *entity.get<Transform>();
 		Model& model = *entity.get<Model>();
-
-		if (!model.meshContextId || !model.programContextId || !model.textureBufferId)
+	
+		if (!_mainProgram.programContext.program || !model.meshContext().indexCount || !model.textureContext().textureBuffer)
 			return;
-
-		const ProgramContext& program = _programContexts[model.programContextId - 1];
-
-		glUseProgram(program.program);
-
+	
+		glUseProgram(_mainProgram.programContext.program);
+	
 		// projection matrix
-		if (program.projectionUnifLoc != -1)
-			glUniformMatrix4fv(program.projectionUnifLoc, 1, GL_FALSE, &_projectionMatrix[0][0]);
-
+		if (_mainProgram.projectionUnifLoc != -1)
+			glUniformMatrix4fv(_mainProgram.projectionUnifLoc, 1, GL_FALSE, &_projectionMatrix[0][0]);
+	
 		// view matrix
 		glm::dmat4 viewMatrix = Renderer::viewMatrix();
-
-		if (program.viewUnifLoc != -1)
-			glUniformMatrix4fv(program.viewUnifLoc, 1, GL_FALSE, &((glm::mat4)viewMatrix)[0][0]);
-
+	
+		if (_mainProgram.viewUnifLoc != -1)
+			glUniformMatrix4fv(_mainProgram.viewUnifLoc, 1, GL_FALSE, &((glm::mat4)viewMatrix)[0][0]);
+	
 		// model matrix
 		glm::dmat4 modelMatrix;
-
-		if (program.modelViewUnifLoc != -1 || program.viewUnifLoc != -1) {
+	
+		if (_mainProgram.modelViewUnifLoc != -1 || _mainProgram.viewUnifLoc != -1) {
 			modelMatrix = transform.globalMatrix();
-
-			if (program.viewUnifLoc != -1)
-				glUniformMatrix4fv(program.modelUnifLoc, 1, GL_FALSE, &((glm::mat4)modelMatrix)[0][0]);
+	
+			if (_mainProgram.viewUnifLoc != -1)
+				glUniformMatrix4fv(_mainProgram.modelUnifLoc, 1, GL_FALSE, &((glm::mat4)modelMatrix)[0][0]);
 		}
-
+	
 		// model view matrix
-		if (program.modelViewUnifLoc != -1)
-			glUniformMatrix4fv(program.modelViewUnifLoc, 1, GL_FALSE, &((glm::mat4)(viewMatrix * modelMatrix))[0][0]);
-
+		if (_mainProgram.modelViewUnifLoc != -1)
+			glUniformMatrix4fv(_mainProgram.modelViewUnifLoc, 1, GL_FALSE, &((glm::mat4)(viewMatrix * modelMatrix))[0][0]);
+	
 		// texture
-		if (program.textureUnifLoc != -1) {
-			glBindTexture(GL_TEXTURE_2D, model.textureBufferId);
-
-			glUniform1i(program.textureUnifLoc, 0);
+		if (_mainProgram.textureUnifLoc != -1) {
+			glBindTexture(GL_TEXTURE_2D, model.textureContext().textureBuffer);
+		
+			glUniform1i(_mainProgram.textureUnifLoc, 0);
 		}
-
+	
 		// mesh
-		MeshContext& meshContext = _meshContexts[model.meshContextId - 1];
-
-		glBindVertexArray(meshContext.arrayObject);
-
-		glBindBuffer(GL_ARRAY_BUFFER, meshContext.vertexBuffer);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, meshContext.indexBuffer);
-
-		glDrawElements(GL_TRIANGLES, meshContext.indexCount, GL_UNSIGNED_INT, 0);
+		glBindVertexArray(model.meshContext().arrayObject);
+	
+		glBindBuffer(GL_ARRAY_BUFFER, model.meshContext().vertexBuffer);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, model.meshContext().indexBuffer);
+	
+		glDrawElements(GL_TRIANGLES, model.meshContext().indexCount, GL_UNSIGNED_INT, 0);
 	});
 }
 
-uint32_t Renderer::loadProgram(const std::string& vertexFile, const std::string& fragmentFile, uint64_t id, bool reload) {
-	GLuint vertexShader = 0;
-	GLuint fragmentShader = 0;
+Renderer::Renderer(Engine& engine, const ShaderVariableInfo & shaderVariables) : _engine(engine), _uniforms(shaderVariables.uniforms), _glLoader(shaderVariables.attributes), _camera(engine) {
+	INTERFACE_ENABLE(engine, SystemInterface::initiate)(0);
+	INTERFACE_ENABLE(engine, SystemInterface::update)(1);
+	INTERFACE_ENABLE(engine, SystemInterface::framebufferSize)(0);
+}
 
-	if (_shaderFiles.find(vertexFile) != _shaderFiles.end())
-		vertexShader = _shaderFiles[vertexFile];
+void Renderer::initiate(const std::vector<std::string>& args) {
+	std::experimental::filesystem::path path = args[0];
+	_path = path.replace_filename("data\\").string();
 
-	if (_shaderFiles.find(fragmentFile) != _shaderFiles.end())
-		fragmentShader = _shaderFiles[fragmentFile];
+	glDebugMessageCallback(errorCallback, nullptr);
 
-	bool newProgram = !vertexShader || !fragmentShader;
-	bool success = true;
-	
-	if (!vertexShader || reload) {
-		success &= _compileShader(GL_VERTEX_SHADER, &vertexShader, vertexFile);
-		_shaderFiles[vertexFile] = vertexShader;
+	glEnable(GL_CULL_FACE);
+	glEnable(GL_DEPTH_TEST);
+	glEnable(GL_MULTISAMPLE);
+	glEnable(GL_DITHER);
+}
+
+void Renderer::update(double dt) {
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	_render({ 0, 0 }, _size);
+}
+
+void Renderer::framebufferSize(glm::uvec2 size) {
+	_size = size;
+}
+
+void Renderer::setMainProgram(const std::string & vertexFile, const std::string & fragmentFile, bool reload){
+	const GlLoader::ProgramContext* program = _glLoader.loadProgram(_path + vertexFile, _path + fragmentFile, reload);
+
+	if (program) {
+		_mainProgram.programContext = *program;
+
+		_mainProgram.modelUnifLoc = glGetUniformLocation(_mainProgram.programContext.program, _uniforms.modelUnifName.c_str());
+		_mainProgram.viewUnifLoc = glGetUniformLocation(_mainProgram.programContext.program, _uniforms.viewUnifName.c_str());
+		_mainProgram.projectionUnifLoc = glGetUniformLocation(_mainProgram.programContext.program, _uniforms.projectionUnifName.c_str());
+		_mainProgram.modelViewUnifLoc = glGetUniformLocation(_mainProgram.programContext.program, _uniforms.modelViewUnifName.c_str());
+		_mainProgram.textureUnifLoc = glGetUniformLocation(_mainProgram.programContext.program, _uniforms.textureUnifName.c_str());
 	}
-	
-	if (!fragmentShader || reload) {
-		success &= _compileShader(GL_FRAGMENT_SHADER, &fragmentShader, fragmentFile);
-		_shaderFiles[fragmentFile] = fragmentShader;
-	}
-	
-	if (!success)
+}
+
+void Renderer::setShape(const ShapeInfo& shape) {
+	_shape = shape;
+}
+
+void Renderer::setCamera(uint64_t id) {
+	_camera.set(id);
+}
+
+uint64_t Renderer::loadScene(const std::string& meshFile, uint64_t id, bool reload) {
+	const GlLoader::MeshHierarchy* scene = _glLoader.loadMesh(_path + meshFile, reload);
+
+	if (!scene || !scene->meshContexts.size())
 		return 0;
 
-	std::string programFiles = vertexFile + '/' + fragmentFile;
-	uint32_t programIndex;
-	
-	if (_programFiles.find(programFiles) != _programFiles.end()) {
-		programIndex = _programFiles[programFiles];
+	if (!id)
+		id = _engine.createEntity();
+
+	const auto& root = scene->nodes[0];
+
+	nodeToEntity(_engine, meshFile, root, id);
+
+	std::vector<uint64_t> ids;
+	ids.resize(scene->nodes.size());
+
+	ids[0] = id;
+
+	for (uint32_t i = 1; i < scene->nodes.size(); i++) {
+		uint64_t currentId = _engine.createEntity();
+		ids[i] = currentId;
+
+		const auto& currentNode = scene->nodes[i];
+
+		nodeToEntity(_engine, meshFile, currentNode, currentId);
+
+		uint64_t parentId = ids[currentNode.parentNodeIndex];
+
+		Transform* parentTransform = _engine.getComponent<Transform>(parentId);
+
+		parentTransform->addChild(currentId);
 	}
-	else {
-		programIndex = _programContexts.size();
-		_programContexts.resize(_programContexts.size() + 1);
-	
-		_programFiles[programFiles] = programIndex;
+}
+
+glm::mat4 Renderer::viewMatrix() const {
+	if (!_camera.valid() || !_camera.has<Transform>())
+		return glm::mat4();
+
+	return glm::inverse(_camera.get<Transform>()->globalMatrix());
+}
+
+GlLoader& Renderer::loader() {
+	return _glLoader;
+}
+
+std::string Renderer::path() const{
+	return _path;
+}
+
+Model::Model(Engine & engine, uint64_t id, const std::string& meshFile, const std::string& textureFile) : ComponentInterface(engine, id) {
+	INTERFACE_ENABLE(engine, ComponentInterface::serialize)(0);
+
+	loadMesh(meshFile);
+	loadTexture(textureFile);
+}
+
+void Model::serialize(BaseReflector& reflector) {
+	reflector.buffer("model", "meshFile", &_meshFile[0], 0);
+	reflector.buffer("model", "meshIndex", &_meshIndex);
+	reflector.buffer("model", "textureFile", &_textureFile[0], 0);
+
+	if (reflector.mode == BaseReflector::In) {
+		loadMesh(_meshFile, _meshIndex);
+		loadTexture(_textureFile);
 	}
-	
-	if (newProgram || reload) {
-		ProgramContext& program = _programContexts[programIndex];
-	
-		if (!program.program) {
-			program.program = glCreateProgram();
-	
-			glAttachShader(program.program, vertexShader);
-			glAttachShader(program.program, fragmentShader);
-	
-			glLinkProgram(program.program);
-		}
-	
-		GLint success;
-		glGetProgramiv(program.program, GL_LINK_STATUS, &success);
-	
-		if (!success) {
-			GLint length = 0;
-			glGetProgramiv(program.program, GL_INFO_LOG_LENGTH, &length);
-	
-			std::vector<GLchar> message(length);
-			glGetProgramInfoLog(program.program, length, &length, &message[0]);
-	
-			glDeleteProgram(program.program);
-			program.program = 0;
+}
 
-			std::cerr << (char*)(&message[0]) << std::endl << std::endl;
-			return 0;
-		}
-	
-		program.modelUnifLoc = glGetUniformLocation(program.program, _constructionInfo.modelUnifName.c_str());
-		program.viewUnifLoc = glGetUniformLocation(program.program, _constructionInfo.viewUnifName.c_str());
-		program.projectionUnifLoc = glGetUniformLocation(program.program, _constructionInfo.projectionUnifName.c_str());
-		program.modelViewUnifLoc = glGetUniformLocation(program.program, _constructionInfo.modelViewUnifName.c_str());
-		program.textureUnifLoc = glGetUniformLocation(program.program, _constructionInfo.textureUnifName.c_str());
+void Model::loadMesh(const std::string& meshFile, uint32_t meshIndex, bool reload) {
+	GlLoader& loader = _engine.system<Renderer>().loader();
+	const std::string path = _engine.system<Renderer>().path();
+
+	const GlLoader::MeshHierarchy* scene = loader.loadMesh(path + meshFile, reload);
+
+	if (scene && meshIndex < scene->meshContexts.size()) {
+		_meshFile = meshFile;
+		_meshIndex = meshIndex;
+		_meshContext = scene->meshContexts[meshIndex];
 	}
-	
-	if (_engine.validEntity(id)) {
-		Model& model = *_engine.addComponent<Model>(id);
-		model.programContextId = programIndex + 1;
+}
+
+void Model::loadTexture(const std::string & textureFile, bool reload) {
+	GlLoader& loader = _engine.system<Renderer>().loader();
+	const std::string path  = _engine.system<Renderer>().path();
+
+	const GlLoader::TextureContext* textureContext = loader.loadTexture(path + textureFile, reload);
+
+	if (textureContext) {
+		_textureFile = textureFile;
+		_textureContext = *textureContext;
 	}
-
-	return programIndex + 1;
 }
 
-uint32_t Renderer::loadTexture(const std::string & textureFile, uint64_t id, bool reload){
-	// check if texture already loaded
-	auto iter = _textureFiles.find(textureFile);
-
-	if (!reload && iter != _textureFiles.end()) {
-		if (id)
-			_addModel(id, 0, iter->second);
-
-		return iter->second;
-	}
-	
-	// if not, or reloading, load from file
-	int width, height, channels;
-	uint8_t* data = stbi_load(textureFile.c_str(), &width, &height, &channels, 4);
-
-	if (!data)
-		return 0;
-
-	// buffer data to opengl
-	GLuint textureBuffer;
-
-	if (iter != _textureFiles.end())
-		textureBuffer = iter->second;
-	else
-		glGenTextures(1, &textureBuffer);
-
-	glBindTexture(GL_TEXTURE_2D, textureBuffer);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, (void*)data);
-	
-	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-	stbi_image_free(data);
-
-	if (id)
-		_addModel(id, 0, textureBuffer);
-
-	return textureBuffer;
+const GlLoader::MeshContext& Model::meshContext() const {
+	return _meshContext;
 }
 
-uint32_t Renderer::loadMesh(const std::string& meshFile, uint64_t id, bool reload){
-	Assimp::Importer importer;
-
-	const aiScene* scene = importer.ReadFile(meshFile, aiProcessPreset_TargetRealtime_MaxQuality);
-
-	if (!scene || !scene->mNumMeshes)
-		return 0;
-
-	std::vector<uint32_t> meshContextIds;
-
-	_recusriveBufferMesh(*scene, *scene->mRootNode, id, &meshContextIds);
-
-	return meshContextIds[0];
-}
-
-std::string Renderer::vertexFile(uint32_t programId) const {
-	return "";
-}
-
-std::string Renderer::fragmentFile(uint32_t programId) const {
-	return "";
-}
-
-std::string Renderer::textureFile(uint32_t textureId) const {
-	return "";
-}
-
-std::string Renderer::meshFile(uint32_t meshId) const {
-	return "";
-}
-
-void Renderer::defaultProgram(const std::string& vertexFile, const std::string& fragmentFile){
-	_defaultProgram = loadProgram(vertexFile, fragmentFile);
-}
-
-void Renderer::defaultTexture(const std::string & textureFile){
-	_defaultTexture = loadTexture(textureFile);
-}
-
-glm::mat4 Renderer::viewMatrix() const{
-	glm::mat4 matrix;
-
-	if (_camera.valid() && _camera.has<Transform>())
-		matrix = glm::inverse(_camera.get<Transform>()->globalMatrix());
-
-	return matrix;
+const GlLoader::TextureContext& Model::textureContext() const {
+	return _textureContext;
 }

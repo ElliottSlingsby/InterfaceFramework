@@ -2,101 +2,54 @@
 
 #include "SystemInterface.hpp"
 
-#include "Window.hpp"
+#include "GlLoader.hpp"
 
-#include <glm\vec3.hpp>
-#include <glm\gtc\quaternion.hpp>
+class Model : public ComponentInterface {
+	GlLoader::MeshContext _meshContext;
+	GlLoader::TextureContext _textureContext;
 
-#include <assimp\scene.h>
+	std::string _meshFile;
+	uint32_t _meshIndex;
+	
+	std::string _textureFile;
 
-#include <vector>
-#include <tuple>
-#include <string>
-#include <unordered_map>
+public:
+	Model(Engine& engine, uint64_t id, const std::string& meshFile = "", const std::string& textureFile = "");
 
-inline void fromAssimp(const aiVector3D& from, glm::vec2* to) {
-	to->x = from.x;
-	to->y = from.y;
-}
+	void serialize(BaseReflector& reflector) final;
 
-inline void fromAssimp(const aiVector3D& from, glm::vec3* to) {
-	to->x = from.x;
-	to->y = from.y;
-	to->z = from.z;
-}
+	void loadMesh(const std::string& meshFile, uint32_t meshIndex = 0, bool reload = false);
+	void loadTexture(const std::string& textureFile, bool reload = false);
 
-inline void fromAssimp(const aiQuaternion& from, glm::quat* to) {
-	to->w = from.w;
-	to->x = from.x;
-	to->y = from.y;
-	to->z = from.z;
-}
+	const GlLoader::MeshContext& meshContext() const;
+	const GlLoader::TextureContext& textureContext() const;
 
-
-struct Model : public ComponentInterface {
-	uint32_t programContextId = 0; // index + 1 into array in renderer
-	uint32_t meshContextId = 0; // index + 1 into array in renderer
-
-	uint32_t textureBufferId = 0; // opengl id
-
-	uint32_t lightmapBufferId = 0;
-
-	glm::uvec2 lightmapResolution = { 64, 64 }; // if 0 don't generate lightmaps
-
-	Model(Engine& engine, uint64_t id) : ComponentInterface(engine, id) {
-		INTERFACE_ENABLE(engine, ComponentInterface::serialize)(0);
-	}
-
-	void serialize(BaseReflector& reflector) final {
-		reflector.buffer("model", "programContextId", &programContextId);
-		reflector.buffer("model", "meshContextId", &meshContextId);
-		reflector.buffer("model", "textureBufferId", &textureBufferId);
-	}
+	friend class Renderer;
 };
 
 class Renderer : public SystemInterface {
-private:
-	struct ProgramContext {
-		GLuint program = 0;
+public:
+	struct ShaderVariableInfo {
+		GlLoader::AttributeInfo attributes;
+
+		struct UnfiromInfo {
+			std::string modelUnifName = "model";
+			std::string viewUnifName = "view";
+			std::string projectionUnifName = "projection";
+			std::string modelViewUnifName = "modelView";
+			std::string textureUnifName = "texture";
+			//std::string bonesUnifName = "bones"; // un-used
+		} uniforms;
+	};
+
+	struct ProgramContextUniforms {
+		GlLoader::ProgramContext programContext;
 
 		GLint modelUnifLoc = -1;
 		GLint viewUnifLoc = -1;
 		GLint projectionUnifLoc = -1;
 		GLint modelViewUnifLoc = -1;
 		GLint textureUnifLoc = -1;
-		//GLint bonesUnifLoc = -1;
-
-		std::string vertexFile = "";
-		std::string fragmentFile = "";
-	};
-
-	struct MeshContext {
-		GLuint arrayObject = 0;
-		GLuint vertexBuffer = 0;
-		GLuint indexBuffer = 0;
-		uint32_t indexCount = 0;
-
-		std::string meshFile = "";
-		uint32_t meshIndex = 0;
-	};
-
-public:
-	struct ConstructorInfo {
-		uint32_t positionAttrLoc = 0;
-		uint32_t normalAttrLoc = 1;
-		uint32_t texcoordAttrLoc = 2;
-		//uint32_t tangentAttrLoc = 3;
-		//uint32_t bitangentAttrLoc = 4;
-		//uint32_t colourAttrLoc = 5;
-		//uint32_t boneWeightsAttrLoc = 6; // un-used
-		//uint32_t boneIndexesAttrLoc = 7; // un-used
-
-		std::string modelUnifName = "model";
-		std::string viewUnifName = "view";
-		std::string projectionUnifName = "projection";
-		std::string modelViewUnifName = "modelView";
-		std::string textureUnifName = "texture";
-		//std::string bonesUnifName = "bones"; // un-used
 	};
 
 	struct ShapeInfo {
@@ -107,60 +60,36 @@ public:
 private:
 	Engine& _engine;
 
-	const ConstructorInfo _constructionInfo;
+	ShaderVariableInfo::UnfiromInfo _uniforms;
 
-	bool _rendering = false;
+	GlLoader _glLoader;
 
-	ShapeInfo _shapeInfo;
+	std::string _path;
+
+	ShapeInfo _shape;
 	glm::vec2 _size;
 	glm::mat4 _projectionMatrix;
 	Engine::Entity _camera;
 
-	std::vector<ProgramContext> _programContexts;
-	std::vector<MeshContext> _meshContexts;
+	ProgramContextUniforms _mainProgram;
 
-	std::unordered_map<std::string, GLuint> _textureFiles;
-	//std::unordered_map<std::string, uint32_t> _meshFiles;
-	std::unordered_map<std::string, GLuint> _shaderFiles;
-	std::unordered_map<std::string, uint32_t> _programFiles;
-
-	uint32_t _defaultProgram = 0;
-	GLuint _defaultTexture = 0;
-	
-	Model* _addModel(uint64_t id, uint32_t mesh = 0, uint32_t texture = 0, GLuint program = 0);
-
-	bool _compileShader(GLuint type, GLuint* shader, const std::string & file);
-
-	void _bufferMesh(MeshContext* meshContext, const aiMesh& mesh);
-
-	void _recusriveBufferMesh(const aiScene& scene, const aiNode& node, uint64_t parent, std::vector<uint32_t>* meshContextIds);
+	void _render(glm::uvec2 position = { 0, 0 }, glm::uvec2 size = { 0, 0 });
 
 public:
-	Renderer(Engine& engine, const ConstructorInfo& constructionInfo = ConstructorInfo());
+	Renderer(Engine& engine, const ShaderVariableInfo& shaderVariables);
 
 	void initiate(const std::vector<std::string>& args) final;
 	void update(double dt) final;
-	void windowOpen(bool opened) final;
 	void framebufferSize(glm::uvec2 size) final;
 
-	void reshape(const ShapeInfo& config);
+	void setMainProgram(const std::string& vertexFile, const std::string& fragmentFile, bool reload = false);
+	void setShape(const ShapeInfo& shape);
 	void setCamera(uint64_t id);
 
-	void buildLightmaps();
-
-	void render(glm::uvec2 position = { 0, 0 }, glm::uvec2 size = { 0, 0 });
-
-	uint32_t loadProgram(const std::string& vertexFile, const std::string& fragmentFile, uint64_t id = 0, bool reload = false);
-	uint32_t loadTexture(const std::string& textureFile, uint64_t id = 0, bool reload = false);
-	uint32_t loadMesh(const std::string& meshFile, uint64_t id = 0, bool reload = false);
-
-	std::string vertexFile(uint32_t programId) const;
-	std::string fragmentFile(uint32_t programId) const;
-	std::string textureFile(uint32_t textureId) const;
-	std::string meshFile(uint32_t meshId) const;
-
-	void defaultProgram(const std::string& vertexFile, const std::string& fragmentFile);
-	void defaultTexture(const std::string& textureFile);
+	uint64_t loadScene(const std::string& meshFile, uint64_t id = 0, bool reload = false);
 
 	glm::mat4 viewMatrix() const;
+
+	GlLoader& loader();
+	std::string path() const;
 };
